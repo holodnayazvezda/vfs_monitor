@@ -1,0 +1,22 @@
+services:
+  vfs-monitor:
+    build: .
+    container_name: vfs-cdp-monitor
+    environment:
+      VFS_MONITOR_ROOT: /app
+      TG_TOKEN: ${TG_TOKEN}
+      OWNER_CHAT_ID: ${OWNER_CHAT_ID}
+      VFS_LOGIN_USER: ${VFS_LOGIN_USER}
+    command:
+      - python
+      - -m
+      - vfs_cdp_monitor.service
+      - --interval
+      - "120"
+      - --cdp-url
+      - ${CDP_URL:-http://host.docker.internal:9222}
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
