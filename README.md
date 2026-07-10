@@ -1,37 +1,37 @@
 # VFS CDP Monitor
 
-Минимальный рабочий монитор VFS Global для маршрута `rus/ru/hun`.
+Монитор слотов VFS Global для Венгрии в Санкт-Петербурге (`rus/ru/hun`, `HUNRUS38`).
 
-Идея:
-
-- Chrome запускается как обычный браузер с Chrome DevTools Protocol на порту `9222`.
-- Пользователь вручную логинится в VFS и вручную проходит Cloudflare/CAPTCHA.
-- Если `VFS_PASSWORD` задан, сервис может сам открыть форму входа и заполнить email/пароль. CAPTCHA и отправку формы делает пользователь.
-- Сервис перехватывает один настоящий запрос `CheckIsSlotAvailable` из браузера.
-- Дальше Python каждые 2 минуты выполняет `fetch()` внутри этой же вкладки Chrome и получает JSON-ответы.
-- Результат печатается в консоль и отправляется в Telegram.
-- Если сессия протухла или VFS начал отдавать ошибки по всем категориям, сервис просит перелогиниться и снова ждёт один настоящий запрос из UI.
-
-Сервис не обходит CAPTCHA, не кликает Cloudflare и не отправляет форму входа вместо пользователя.
+Сервис работает через обычный Chrome с включенным Chrome DevTools Protocol. CAPTCHA не обходится: пользователь проходит ее вручную. После входа сервис сам выполняет `CheckIsSlotAvailable` внутри залогиненной вкладки Chrome раз в 2 минуты и отправляет результат в Telegram.
 
 ## Что проверяется
 
-Файл конфигурации: `config/vfs_target.yaml`
+Файл: `config/vfs_target.yaml`
 
 ```yaml
+route: rus/ru/hun
 country_code: rus
 mission_code: hun
 center_code: HUNRUS38
 
 categories:
-  RH: Captured category from VFS UI
   VS_1_2: Other (Not a Tourism) / Иные цели
   VS_1_1: Tourism / Туризм
 ```
 
-## Ручной запуск
+## Как это работает
 
-### 1. Установка
+1. Chrome запускается с CDP на `127.0.0.1:9222`.
+2. Если сессии нет, сервис открывает VFS, принимает cookies, переходит к логину и заполняет email/password из `config/.env`.
+3. Сервис ждет `30` секунд, чтобы пользователь вручную прошел CAPTCHA.
+4. Сервис нажимает кнопку `Войти`.
+5. После входа сервис берет из браузера `sessionStorage.JWT` и `sessionStorage.csk_str`.
+6. Каждые `120` секунд сервис выполняет `fetch()` внутри вкладки Chrome и проверяет слоты.
+7. Результат печатается в лог и отправляется в Telegram.
+
+Сервис не обходит CAPTCHA и не кликает Cloudflare.
+
+## Настройка
 
 ```bash
 cd /Users/dany/coding/projects/vfs-global/vfs-cdp-monitor
@@ -44,107 +44,131 @@ cp config/.env.example config/.env
 Заполни `config/.env`:
 
 ```env
-TG_TOKEN=...
-OWNER_CHAT_ID=...
+TG_TOKEN=telegram-bot-token
+OWNER_CHAT_ID=telegram-chat-id
 VFS_LOGIN_USER=your-vfs-email@example.com
 VFS_PASSWORD=your-vfs-password
 ```
 
-### 2. Запуск Chrome
+`config/.env` находится в `.gitignore`.
+
+## Ручной запуск
+
+1. Запусти Chrome с CDP:
 
 ```bash
 ./scripts/start_chrome_cdp.sh
 ```
 
-В открытом Chrome:
-
-- открой VFS;
-- прими cookies;
-- если включен login assist, дождись заполнения email/пароля;
-- пройди Cloudflare/CAPTCHA вручную и нажми кнопку входа сам;
-- открой форму записи;
-- один раз вызови проверку категории, чтобы VFS отправил `CheckIsSlotAvailable`.
-
-### 3. Запуск сервиса
-
-В другом терминале:
+2. В другом терминале запусти сервис:
 
 ```bash
 source .venv/bin/activate
-python -m vfs_cdp_monitor.service \
-  --interval 120
+python -m vfs_cdp_monitor.service --interval 120 --login-submit-wait 30
 ```
 
-Если свежих заголовков ещё нет, сервис напишет в консоль/Telegram, что ждёт реальный `CheckIsSlotAvailable`.
-После этого просто вызови проверку категории в UI VFS один раз.
+3. Если откроется CAPTCHA, пройди ее руками. Сервис сам нажмет `Войти` после 30 секунд.
 
-Отдельно проверить только автоподготовку формы входа можно так:
-
-```bash
-python -m vfs_cdp_monitor.login_assist_cli
-```
-
-Она откроет/использует вкладку VFS, попробует нажать `Записаться на прием`, заполнит email/пароль и остановится. CAPTCHA и кнопку входа нужно пройти вручную.
-
-## Docker
-
-Docker-контейнер запускает только Python-сервис. Chrome остаётся на хосте, потому что логин и CAPTCHA нужно проходить руками в обычном браузере.
-
-### 1. Запусти Chrome на хосте
-
-На macOS:
-
-```bash
-cd /Users/dany/coding/projects/vfs-global/vfs-cdp-monitor
-CDP_ADDRESS=0.0.0.0 CDP_ALLOW_ORIGINS='*' ./scripts/start_chrome_cdp.sh
-```
-
-Важно: Docker должен видеть CDP Chrome по `host.docker.internal:9222`.
-Для обычного ручного запуска без Docker используй `./scripts/start_chrome_cdp.sh`, чтобы CDP слушал только `127.0.0.1`.
-
-### 2. Подготовь `.env` для Docker Compose
-
-В корне проекта создай `.env`:
-
-```env
-TG_TOKEN=...
-OWNER_CHAT_ID=...
-VFS_LOGIN_USER=your-vfs-email@example.com
-VFS_PASSWORD=your-vfs-password
-CDP_URL=http://host.docker.internal:9222
-```
-
-### 3. Запусти сервис
-
-```bash
-docker compose up --build
-```
-
-Дальше в Chrome вручную логинишься и вызываешь один запрос категории. Контейнер поймает `authorize/clientSource`, сохранит их в `config/browser_session.local.json` и начнёт мониторинг.
-
-## Остановка
-
-Ручной запуск:
+Остановка ручного режима:
 
 ```bash
 Ctrl+C
 ```
 
-Docker:
+## Проверить только логин
+
+```bash
+source .venv/bin/activate
+python -m vfs_cdp_monitor.login_assist_cli
+```
+
+Команда откроет/использует вкладку VFS, примет cookies, перейдет к логину и заполнит email/password. CAPTCHA и отправка формы остаются ручным шагом.
+
+## Запуск как macOS-сервис
+
+Файл LaunchAgent лежит в проекте: `launchd/com.dany.vfs-cdp-monitor.plist`.
+
+Установить LaunchAgent:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp launchd/com.dany.vfs-cdp-monitor.plist ~/Library/LaunchAgents/
+```
+
+Запустить или перезапустить сервис:
+
+```bash
+launchctl bootstrap gui/$(id -u) /Users/dany/Library/LaunchAgents/com.dany.vfs-cdp-monitor.plist
+launchctl kickstart -k gui/$(id -u)/com.dany.vfs-cdp-monitor
+```
+
+Если агент уже был загружен и нужно переустановить:
+
+```bash
+launchctl bootout gui/$(id -u) /Users/dany/Library/LaunchAgents/com.dany.vfs-cdp-monitor.plist
+launchctl bootstrap gui/$(id -u) /Users/dany/Library/LaunchAgents/com.dany.vfs-cdp-monitor.plist
+```
+
+Проверить статус:
+
+```bash
+launchctl print gui/$(id -u)/com.dany.vfs-cdp-monitor
+```
+
+Остановить:
+
+```bash
+launchctl bootout gui/$(id -u) /Users/dany/Library/LaunchAgents/com.dany.vfs-cdp-monitor.plist
+```
+
+Логи:
+
+```text
+data/service.log
+data/service.err.log
+```
+
+## Docker
+
+Docker запускает только Python-сервис. Chrome остается на хосте, потому что CAPTCHA нужно проходить руками.
+
+1. Запусти Chrome на хосте так, чтобы контейнер видел CDP:
+
+```bash
+CDP_ADDRESS=0.0.0.0 CDP_ALLOW_ORIGINS='*' ./scripts/start_chrome_cdp.sh
+```
+
+2. Создай `.env` в корне проекта:
+
+```env
+TG_TOKEN=telegram-bot-token
+OWNER_CHAT_ID=telegram-chat-id
+VFS_LOGIN_USER=your-vfs-email@example.com
+VFS_PASSWORD=your-vfs-password
+CDP_URL=http://host.docker.internal:9222
+```
+
+3. Запусти:
+
+```bash
+docker compose up --build
+```
+
+Остановка:
 
 ```bash
 docker compose down
 ```
 
-Chrome можно закрыть обычным способом.
-
 ## Поведение при ошибках
 
-Если VFS начинает отдавать `401`, `403`, `429201` по всем категориям или Chrome недоступен, сервис:
+Если браузерная сессия пропала:
 
-1. отправляет сообщение в Telegram;
-2. открывает/ожидает Chrome с CDP;
-3. если есть `VFS_PASSWORD`, пытается открыть форму входа и заполнить email/пароль;
-4. ждёт один настоящий `CheckIsSlotAvailable`;
-5. сохраняет свежие заголовки;
-6. продолжает мониторинг.
+1. сервис отправит сообщение в Telegram;
+2. откроет VFS-вкладку или Chrome;
+3. заполнит логин и пароль;
+4. даст `30` секунд на ручную CAPTCHA;
+5. нажмет `Войти`;
+6. продолжит проверки каждые `120` секунд.
+
+Если VFS временно отвечает `429`, сервис не перелогинивается сразу, а ждет следующий интервал.

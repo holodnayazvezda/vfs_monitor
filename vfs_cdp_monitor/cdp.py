@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -19,6 +20,12 @@ DEFAULT_PROFILE = str(ROOT / ".chrome-profile")
 
 def http_json(url: str, timeout: int = 5):
     with urllib.request.urlopen(url, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def http_json_put(url: str, timeout: int = 5):
+    request = urllib.request.Request(url, method="PUT")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -65,6 +72,11 @@ def find_vfs_tab(cdp_url: str = DEFAULT_CDP_URL) -> dict | None:
         if "visa.vfsglobal.com" in (tab.get("url") or ""):
             return tab
     return pages[0] if pages else None
+
+
+def open_vfs_tab(cdp_url: str = DEFAULT_CDP_URL) -> dict:
+    url = cdp_url.rstrip("/") + "/json/new?" + urllib.parse.quote(VFS_HOME, safe=":/")
+    return http_json_put(url, timeout=5)
 
 
 def wait_for_vfs_tab(cdp_url: str = DEFAULT_CDP_URL, timeout: int = 180) -> dict:

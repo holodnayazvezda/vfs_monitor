@@ -6,9 +6,9 @@ import os
 import time
 
 from .capture import capture_headers, load_session_headers
-from .cdp import CdpClient, DEFAULT_CDP_URL, DEFAULT_CHROME, DEFAULT_PROFILE, is_cdp_up, launch_chrome
+from .cdp import CdpClient, DEFAULT_CDP_URL, DEFAULT_CHROME, DEFAULT_PROFILE, find_vfs_tab, is_cdp_up, launch_chrome, open_vfs_tab
 from .config import CATEGORIES, LIFT_API, TARGET, load_env_file, slot_payload
-from .login_assist import assist_login
+from .login_assist import assist_login, submit_login_after_wait
 from .telegram import broadcast
 
 
@@ -59,9 +59,36 @@ def needs_recapture(results: list[dict]) -> bool:
     return False
 
 
+def needs_browser_login(results: list[dict]) -> bool:
+    if not results:
+        return True
+    for result in results:
+        body = result.get("body")
+        code = str(body.get("code") or "") if isinstance(body, dict) else ""
+        if code == "NO_BROWSER_SESSION":
+            return True
+        if result.get("status") in (401, 403):
+            return True
+        if code in {"401101", "403201"}:
+            return True
+    return False
+
+
 def ensure_chrome(args):
     if is_cdp_up(args.cdp_url):
-        return
+        if find_vfs_tab(args.cdp_url):
+            return
+        log("Chrome/CDP is available, but no VFS tab is open. Opening VFS tab.")
+        try:
+            open_vfs_tab(args.cdp_url)
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                if find_vfs_tab(args.cdp_url):
+                    return
+                time.sleep(0.5)
+        except Exception as exc:
+            log(f"Opening VFS tab via CDP failed: {type(exc).__name__}: {exc}")
+        log("VFS tab is still unavailable; launching Chrome.")
     broadcast(
         "VFS monitor: Chrome/CDP is not available. Opening Chrome now. "
         "Please log in manually and trigger one appointment check in VFS."
@@ -108,6 +135,32 @@ def recapture(args) -> tuple[str, str]:
     return authorize, client_source
 
 
+def assisted_browser_login(args) -> None:
+    ensure_chrome(args)
+    if not args.login_assist:
+        return
+    if not args.password:
+        broadcast(
+            "VFS monitor: VFS_PASSWORD is empty, so login assist is skipped. "
+            "Please log in manually."
+        )
+        return
+    broadcast(
+        "VFS monitor: browser session is not ready. "
+        "I will open/fill VFS login, then wait for manual CAPTCHA."
+    )
+    filled = assist_login(args.cdp_url, args.login_user, args.password, timeout=args.login_assist_timeout)
+    if not filled:
+        broadcast("VFS monitor: login form was not filled automatically. Please check Chrome.")
+        return
+    broadcast(
+        f"VFS monitor: login form filled. You have {args.login_submit_wait} seconds "
+        "to complete CAPTCHA; then I will press the login button."
+    )
+    submit_result = submit_login_after_wait(args.cdp_url, wait_seconds=args.login_submit_wait)
+    broadcast(f"VFS monitor: login submit step finished: {submit_result.get('stage') or submit_result}")
+
+
 def run_fetch(authorize: str, client_source: str, login_user: str, cdp_url: str) -> list[dict]:
     client = CdpClient.connect(cdp_url)
     try:
@@ -151,6 +204,59 @@ def run_fetch(authorize: str, client_source: str, login_user: str, cdp_url: str)
         client.close()
 
 
+def run_browser_fetch(login_user: str, cdp_url: str) -> list[dict]:
+    client = CdpClient.connect(cdp_url)
+    try:
+        cfg = {
+            "api": LIFT_API,
+            "route": TARGET["route"],
+            "acceptLanguage": TARGET["accept_language"],
+            "categories": CATEGORIES,
+            "payloads": {code: slot_payload(login_user, code) for code in CATEGORIES},
+        }
+        expression = f"""
+            (async () => {{
+              const cfg = {json.dumps(cfg, ensure_ascii=False)};
+              const readMaybeJson = value => {{
+                if (!value) return value;
+                try {{ return JSON.parse(value); }} catch {{ return value; }}
+              }};
+              const cleanHeader = value => String(value || "").replace(/[\\u0000-\\u001f\\u007f]/g, "");
+              const authorize = cleanHeader(sessionStorage.getItem("JWT") || "");
+              const clientSource = cleanHeader(readMaybeJson(sessionStorage.getItem("csk_str") || ""));
+              const loginUser = sessionStorage.getItem("logged_email") || Object.values(cfg.payloads)[0]?.loginUser || "";
+              if (!authorize || !clientSource) {{
+                return [{{categoryCode: "session", categoryName: "Browser session", status: 401, body: {{code: "NO_BROWSER_SESSION", description: "JWT/clientSource not found in browser sessionStorage"}}}}];
+              }}
+              const results = [];
+              for (const [code, name] of Object.entries(cfg.categories)) {{
+                const payload = {{...cfg.payloads[code], loginUser}};
+                const response = await fetch(`${{cfg.api}}/appointment/CheckIsSlotAvailable`, {{
+                  method: "POST",
+                  credentials: "include",
+                  headers: {{
+                    accept: "application/json, text/plain, */*",
+                    "accept-language": cfg.acceptLanguage,
+                    authorize,
+                    clientSource,
+                    "content-type": "application/json;charset=utf-8",
+                    route: cfg.route,
+                  }},
+                  body: JSON.stringify(payload),
+                }});
+                const text = await response.text();
+                let body;
+                try {{ body = JSON.parse(text); }} catch {{ body = text; }}
+                results.push({{categoryCode: code, categoryName: name, status: response.status, body}});
+              }}
+              return results;
+            }})()
+        """
+        return client.evaluate(expression, await_promise=True, timeout=60)
+    finally:
+        client.close()
+
+
 def main():
     load_env_file()
     parser = argparse.ArgumentParser(description="VFS CDP monitor service")
@@ -164,6 +270,8 @@ def main():
     parser.add_argument("--capture-timeout", type=int, default=900)
     parser.add_argument("--login-assist", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--login-assist-timeout", type=int, default=180)
+    parser.add_argument("--login-submit-wait", type=int, default=30)
+    parser.add_argument("--direct-browser", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--telegram-all", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
@@ -173,19 +281,27 @@ def main():
     log("VFS CDP monitor service starting")
     log(f"Categories: {', '.join(CATEGORIES)}")
     ensure_chrome(args)
-    authorize, client_source = load_session_headers()
-    if not (authorize and client_source):
+    authorize, client_source = None, None
+    if not args.direct_browser:
+        authorize, client_source = load_session_headers()
+    if not args.direct_browser and not (authorize and client_source):
         authorize, client_source = recapture(args)
 
     while True:
         try:
             ensure_chrome(args)
-            results = run_fetch(authorize, client_source, args.login_user, args.cdp_url)
+            if args.direct_browser:
+                results = run_browser_fetch(args.login_user, args.cdp_url)
+            else:
+                results = run_fetch(authorize, client_source, args.login_user, args.cdp_url)
             report = human_report(results)
             log(report)
             if args.telegram_all or any(has_slot(result) for result in results):
                 broadcast(report)
-            if needs_recapture(results):
+            if args.direct_browser and needs_browser_login(results):
+                broadcast("VFS monitor: browser session seems invalid. Please complete login/CAPTCHA; I will retry direct browser requests.")
+                assisted_browser_login(args)
+            elif not args.direct_browser and needs_recapture(results):
                 broadcast("VFS monitor: session seems invalid/rate-limited. Please refresh/login and trigger one category check.")
                 authorize, client_source = recapture(args)
         except KeyboardInterrupt:
@@ -193,11 +309,18 @@ def main():
         except Exception as exc:
             message = f"VFS monitor error: {type(exc).__name__}: {exc}"
             log(message)
-            broadcast(message + "\nPlease check Chrome/VFS login. I will wait for fresh headers.")
-            try:
-                authorize, client_source = recapture(args)
-            except Exception as recapture_exc:
-                log(f"Recapture failed: {type(recapture_exc).__name__}: {recapture_exc}")
+            if args.direct_browser:
+                broadcast(message + "\nPlease check Chrome/VFS login. I will retry direct browser requests.")
+                try:
+                    assisted_browser_login(args)
+                except Exception as login_exc:
+                    log(f"Login assist failed: {type(login_exc).__name__}: {login_exc}")
+            else:
+                broadcast(message + "\nPlease check Chrome/VFS login. I will wait for fresh headers.")
+                try:
+                    authorize, client_source = recapture(args)
+                except Exception as recapture_exc:
+                    log(f"Recapture failed: {type(recapture_exc).__name__}: {recapture_exc}")
         time.sleep(args.interval)
 
 

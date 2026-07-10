@@ -23,7 +23,6 @@ DEFAULT_TARGET = {
     "center_code": "HUNRUS38",
     "accept_language": "ru,en-US;q=0.9,en;q=0.8",
     "categories": {
-        "RH": "Captured category from VFS UI",
         "VS_1_2": "Other (Not a Tourism) / Иные цели",
         "VS_1_1": "Tourism / Туризм",
     },
