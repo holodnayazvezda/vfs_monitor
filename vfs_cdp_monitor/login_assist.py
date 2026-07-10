@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 
-from .cdp import CdpClient, DEFAULT_CDP_URL
+from .cdp import CdpClient, DEFAULT_CDP_URL, open_vfs_login_tab
 from .config import VFS_HOME
 
 
@@ -18,9 +18,13 @@ def assist_login(cdp_url: str = DEFAULT_CDP_URL, login_user: str = "", password:
 
     deadline = time.time() + timeout
     last_result = None
-    print("Login assist: opening VFS home and trying to reach login form...", flush=True)
+    print("Login assist: opening a fresh VFS login tab and trying to fill login form...", flush=True)
+    try:
+        open_vfs_login_tab(cdp_url)
+    except Exception as exc:
+        print(f"Login assist: opening login tab failed: {type(exc).__name__}: {exc}", flush=True)
     while time.time() < deadline:
-        client = CdpClient.connect(cdp_url)
+        client = CdpClient.connect_login(cdp_url)
         try:
             try:
                 result = client.evaluate(_assist_expression(login_user, password), await_promise=True, timeout=45)
@@ -42,7 +46,10 @@ def assist_login(cdp_url: str = DEFAULT_CDP_URL, login_user: str = "", password:
 def submit_login_after_wait(cdp_url: str = DEFAULT_CDP_URL, wait_seconds: int = 30) -> dict:
     print(f"Waiting {wait_seconds} seconds before pressing VFS login button...", flush=True)
     time.sleep(wait_seconds)
-    client = CdpClient.connect(cdp_url)
+    try:
+        client = CdpClient.connect_login(cdp_url)
+    except Exception:
+        client = CdpClient.connect(cdp_url)
     try:
         result = client.evaluate(_submit_login_expression(), await_promise=True, timeout=45)
         print(f"Login submit step: {result}", flush=True)

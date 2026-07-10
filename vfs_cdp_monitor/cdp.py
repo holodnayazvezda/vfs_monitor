@@ -16,6 +16,7 @@ from .config import ROOT, VFS_HOME
 DEFAULT_CDP_URL = "http://127.0.0.1:9222"
 DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 DEFAULT_PROFILE = str(ROOT / ".chrome-profile")
+VFS_LOGIN = VFS_HOME.rstrip("/") + "/login"
 
 
 def http_json(url: str, timeout: int = 5):
@@ -79,6 +80,20 @@ def open_vfs_tab(cdp_url: str = DEFAULT_CDP_URL) -> dict:
     return http_json_put(url, timeout=5)
 
 
+def find_vfs_login_tab(cdp_url: str = DEFAULT_CDP_URL) -> dict | None:
+    tabs = http_json(cdp_url.rstrip("/") + "/json", timeout=5)
+    pages = [tab for tab in tabs if tab.get("type") == "page"]
+    for tab in pages:
+        if "visa.vfsglobal.com/rus/ru/hun/login" in (tab.get("url") or ""):
+            return tab
+    return None
+
+
+def open_vfs_login_tab(cdp_url: str = DEFAULT_CDP_URL) -> dict:
+    url = cdp_url.rstrip("/") + "/json/new?" + urllib.parse.quote(VFS_LOGIN, safe=":/")
+    return http_json_put(url, timeout=5)
+
+
 def wait_for_vfs_tab(cdp_url: str = DEFAULT_CDP_URL, timeout: int = 180) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -87,6 +102,16 @@ def wait_for_vfs_tab(cdp_url: str = DEFAULT_CDP_URL, timeout: int = 180) -> dict
             return tab
         time.sleep(1)
     raise RuntimeError(f"No VFS tab found via {cdp_url}")
+
+
+def wait_for_vfs_login_tab(cdp_url: str = DEFAULT_CDP_URL, timeout: int = 180) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        tab = find_vfs_login_tab(cdp_url)
+        if tab:
+            return tab
+        time.sleep(1)
+    raise RuntimeError(f"No VFS login tab found via {cdp_url}")
 
 
 class CdpClient:
@@ -98,6 +123,12 @@ class CdpClient:
     def connect(cls, cdp_url: str = DEFAULT_CDP_URL) -> "CdpClient":
         tab = wait_for_vfs_tab(cdp_url)
         print(f"Connected tab: {tab.get('title')} | {tab.get('url')}", flush=True)
+        return cls(tab["webSocketDebuggerUrl"])
+
+    @classmethod
+    def connect_login(cls, cdp_url: str = DEFAULT_CDP_URL) -> "CdpClient":
+        tab = wait_for_vfs_login_tab(cdp_url)
+        print(f"Connected login tab: {tab.get('title')} | {tab.get('url')}", flush=True)
         return cls(tab["webSocketDebuggerUrl"])
 
     def close(self):
