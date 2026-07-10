@@ -6,12 +6,13 @@
 
 - Chrome запускается как обычный браузер с Chrome DevTools Protocol на порту `9222`.
 - Пользователь вручную логинится в VFS и вручную проходит Cloudflare/CAPTCHA.
+- Если `VFS_PASSWORD` задан, сервис может сам открыть форму входа и заполнить email/пароль. CAPTCHA и отправку формы делает пользователь.
 - Сервис перехватывает один настоящий запрос `CheckIsSlotAvailable` из браузера.
 - Дальше Python каждые 2 минуты выполняет `fetch()` внутри этой же вкладки Chrome и получает JSON-ответы.
 - Результат печатается в консоль и отправляется в Telegram.
 - Если сессия протухла или VFS начал отдавать ошибки по всем категориям, сервис просит перелогиниться и снова ждёт один настоящий запрос из UI.
 
-Сервис не обходит CAPTCHA и не кликает Cloudflare.
+Сервис не обходит CAPTCHA, не кликает Cloudflare и не отправляет форму входа вместо пользователя.
 
 ## Что проверяется
 
@@ -46,6 +47,7 @@ cp config/.env.example config/.env
 TG_TOKEN=...
 OWNER_CHAT_ID=...
 VFS_LOGIN_USER=your-vfs-email@example.com
+VFS_PASSWORD=your-vfs-password
 ```
 
 ### 2. Запуск Chrome
@@ -58,8 +60,8 @@ VFS_LOGIN_USER=your-vfs-email@example.com
 
 - открой VFS;
 - прими cookies;
-- залогинься вручную;
-- пройди Cloudflare/CAPTCHA вручную;
+- если включен login assist, дождись заполнения email/пароля;
+- пройди Cloudflare/CAPTCHA вручную и нажми кнопку входа сам;
 - открой форму записи;
 - один раз вызови проверку категории, чтобы VFS отправил `CheckIsSlotAvailable`.
 
@@ -75,6 +77,14 @@ python -m vfs_cdp_monitor.service \
 
 Если свежих заголовков ещё нет, сервис напишет в консоль/Telegram, что ждёт реальный `CheckIsSlotAvailable`.
 После этого просто вызови проверку категории в UI VFS один раз.
+
+Отдельно проверить только автоподготовку формы входа можно так:
+
+```bash
+python -m vfs_cdp_monitor.login_assist_cli
+```
+
+Она откроет/использует вкладку VFS, попробует нажать `Записаться на прием`, заполнит email/пароль и остановится. CAPTCHA и кнопку входа нужно пройти вручную.
 
 ## Docker
 
@@ -100,6 +110,7 @@ CDP_ADDRESS=0.0.0.0 CDP_ALLOW_ORIGINS='*' ./scripts/start_chrome_cdp.sh
 TG_TOKEN=...
 OWNER_CHAT_ID=...
 VFS_LOGIN_USER=your-vfs-email@example.com
+VFS_PASSWORD=your-vfs-password
 CDP_URL=http://host.docker.internal:9222
 ```
 
@@ -133,7 +144,7 @@ Chrome можно закрыть обычным способом.
 
 1. отправляет сообщение в Telegram;
 2. открывает/ожидает Chrome с CDP;
-3. просит вручную перелогиниться;
+3. если есть `VFS_PASSWORD`, пытается открыть форму входа и заполнить email/пароль;
 4. ждёт один настоящий `CheckIsSlotAvailable`;
 5. сохраняет свежие заголовки;
 6. продолжает мониторинг.

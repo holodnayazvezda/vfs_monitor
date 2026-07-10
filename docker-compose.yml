@@ -7,6 +7,7 @@ services:
       TG_TOKEN: ${TG_TOKEN}
       OWNER_CHAT_ID: ${OWNER_CHAT_ID}
       VFS_LOGIN_USER: ${VFS_LOGIN_USER}
+      VFS_PASSWORD: ${VFS_PASSWORD}
     command:
       - python
       - -m

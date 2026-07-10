@@ -8,6 +8,7 @@ import time
 from .capture import capture_headers, load_session_headers
 from .cdp import CdpClient, DEFAULT_CDP_URL, DEFAULT_CHROME, DEFAULT_PROFILE, is_cdp_up, launch_chrome
 from .config import CATEGORIES, LIFT_API, TARGET, load_env_file, slot_payload
+from .login_assist import assist_login
 from .telegram import broadcast
 
 
@@ -75,9 +76,31 @@ def ensure_chrome(args):
 
 def recapture(args) -> tuple[str, str]:
     ensure_chrome(args)
+    if args.login_assist:
+        if args.password:
+            broadcast(
+                "VFS monitor: preparing VFS login form. "
+                "I will fill email/password, then you complete CAPTCHA and submit manually."
+            )
+            filled = assist_login(args.cdp_url, args.login_user, args.password, timeout=args.login_assist_timeout)
+            if filled:
+                broadcast(
+                    "VFS monitor: login form filled. "
+                    "Please complete CAPTCHA and press the login/continue button manually."
+                )
+            else:
+                broadcast(
+                    "VFS monitor: could not fill login form automatically. "
+                    "Please log in manually, then trigger one appointment/category check."
+                )
+        else:
+            broadcast(
+                "VFS monitor: VFS_PASSWORD is empty, so login assist is skipped. "
+                "Please log in manually and trigger one appointment/category check."
+            )
     broadcast(
         "VFS monitor needs a fresh browser session.\n"
-        "Open Chrome, log in to VFS manually, complete CAPTCHA if needed, "
+        "Open Chrome, complete CAPTCHA/login if needed, "
         "then trigger one appointment/category check. I will capture fresh headers."
     )
     authorize, client_source = capture_headers(args.cdp_url, args.login_user, timeout=args.capture_timeout)
@@ -136,8 +159,11 @@ def main():
     parser.add_argument("--profile-dir", default=DEFAULT_PROFILE)
     parser.add_argument("--chrome-path", default=DEFAULT_CHROME)
     parser.add_argument("--login-user", default=os.getenv("VFS_LOGIN_USER", ""))
+    parser.add_argument("--password", default=os.getenv("VFS_PASSWORD", ""))
     parser.add_argument("--interval", type=int, default=120)
     parser.add_argument("--capture-timeout", type=int, default=900)
+    parser.add_argument("--login-assist", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--login-assist-timeout", type=int, default=180)
     parser.add_argument("--telegram-all", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 

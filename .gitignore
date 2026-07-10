@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 
 data/
+.env
 config/.env
 config/browser_session.local.json
 .chrome-profile/
